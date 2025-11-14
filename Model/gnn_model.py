@@ -7,6 +7,7 @@ This module handles:
 3. Training the GNN with class imbalance handling and simple early stopping
 4. Top-K F1 search and K scaling from validation to test
 
+Author: 褚柏均
 """
 
 from typing import Dict, Tuple
@@ -329,12 +330,10 @@ def train_gnn_model(
                 patience += 1
 
             print(
-                f"[Epoch {epoch:03d}] loss={loss.item():.4f} "
-                f"val_F1={f1:.4f} (best={best_f1:.4f}) patience={patience}"
+                f"Epoch {epoch:03d} loss={loss.item():.4f} "
             )
 
             if patience >= max_patience:
-                print("[Train] Early stopping triggered.")
                 break
 
     if best_state is not None:
