@@ -177,5 +177,3 @@ K_test = ceil( (K_val* / N_val) * N_test * alpha )
 - 先用閾值法，如果預測的陽性數量過少（低於 ```min_pos_pred```），則改用 Top-K
 - 其它模式則可強制使用 Top-K 或閾值（程式中已支援）
 
-
-
