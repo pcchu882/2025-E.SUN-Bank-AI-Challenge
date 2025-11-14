@@ -20,11 +20,13 @@
 │   ├── acct_alert.csv    
 │   ├── acct_predict.csv  
 │   └── acct_transaction.csv        
-├── main.py             
+├── main.py   
+├── result.csv   
 ├── requirements.txt  
 └── README.md     
 
-preliminary_data/         # 存放Dataset位置    
+preliminary_data/         # 存放Dataset位置  
+result.csv                # 輸出預測結果
 main.py                   # 執行完整流程：前處理 → 訓練 → 產生 result.csv  
 requirements.txt          # 套件需求  
 README.md                 # 說明專案概述、環境、使用方式與實驗結果  
@@ -39,6 +41,9 @@ README.md                 # 說明專案概述、環境、使用方式與實驗�
 ```bash
 pip install -r requirements.txt
 ```
+
+設定資料集 `preliminary_data/` ，確認裡面資料存在
+
 
 ## 2. 執行
 
