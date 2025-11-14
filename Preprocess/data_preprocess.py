@@ -28,21 +28,25 @@ def pick_col_name(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
         2. Exact match (case-insensitive)
         3. Substring match (candidate appears in column name, case-insensitive)
     """
-    col_list = list(df.columns)
-    lower_map = {c.lower(): c for c in col_list}
+    column_list = list(df.columns)
+    # 建一個小寫對應表，方便之後做不分大小寫比對
+    lower_to_original = {col.lower(): col for col in column_list}
 
     # 1 & 2: exact match
     for cand in candidates:
-        if cand in col_list:
+        # 先試完全一樣（大小寫敏感）
+        if cand in column_list:
             return cand
-        cand_lower = cand.lower()
-        if cand_lower in lower_map:
-            return lower_map[cand_lower]
 
-    # 3: substring match
+        # 再試不分大小寫
+        cand_lower = cand.lower()
+        if cand_lower in lower_to_original:
+            return lower_to_original[cand_lower]
+
+    # 3: substring match（候選字串被包含在欄位名中）
     for cand in candidates:
         cand_lower = cand.lower()
-        for col in col_list:
+        for col in column_list:
             if cand_lower in col.lower():
                 return col
 
@@ -89,14 +93,8 @@ def infer_column_mapping(
         - to_acct   / receiver_acct_id / dst / target_account
         - txn_amt   / amount / tx_amount / trade_amount
         - acct      / acct_id / account_id / account
-
-    Returns:
-        A dict mapping:
-            - "src", "dst", "amt"
-            - "from_type", "to_type"
-            - "alert_acct", "alert_date"
-            - "predict_acct"
     """
+
     src_col = pick_col_name(
         tx_df,
         ["from_acct", "payer_acct_id", "src", "src_acct", "from", "acct_from", "source_account"],
@@ -109,7 +107,6 @@ def infer_column_mapping(
         tx_df,
         ["txn_amt", "amount", "tx_amount", "amt", "money", "trade_amount"],
     )
-
     from_type_col = pick_col_name(
         tx_df,
         ["from_acct_type", "src_acct_type", "is_esun_from", "from_type"],
@@ -121,12 +118,11 @@ def infer_column_mapping(
 
     if src_col is None or dst_col is None:
         raise ValueError("Cannot find src/dst columns in acct_transaction.csv")
-
-    # 若沒有金額欄位，就用常數 1.0，代表「交易次數」
     if amt_col is None:
-        tx_df["_AMT_"] = 1.0
-        amt_col = "_AMT_"
+        tx_df["_CONST_AMT_"] = 1.0
+        amt_col = "_CONST_AMT_"
 
+    # 警示帳戶檔與預測名單檔中的帳戶欄位
     alert_acct_col = pick_col_name(alert_df, ["acct", "acct_id", "account_id", "account"])
     alert_date_col = pick_col_name(alert_df, ["event_date", "alert_date", "date", "datetime", "month"])
     predict_acct_col = pick_col_name(predict_df, ["acct", "acct_id", "account_id", "account"])
@@ -144,6 +140,7 @@ def infer_column_mapping(
         "alert_date": alert_date_col,
         "predict_acct": predict_acct_col,
     }
+
     print("[Preprocess] Column mapping:", col_map)
     return col_map
 
@@ -156,123 +153,162 @@ def make_account_features_basic(tx_df: pd.DataFrame, col_map: Dict[str, str]) ->
     Build basic account-level features from transaction logs.
 
     Feature list roughly matches the version used in the final submission,
-    but the implementation is kept simple for readability.
+    but with simpler implementation and different column names.
     """
-    src = col_map["src"]
-    dst = col_map["dst"]
-    amt = col_map["amt"]
+    # 取出實際欄位名稱
+    src_col = col_map["src"]   # 付款帳戶
+    dst_col = col_map["dst"]   # 收款帳戶
+    amt_col = col_map["amt"]   # 交易金額（或常數 1）
 
-    # --- 1. 針對「付款方」聚合金額與次數 ---
-    src_agg_amt = tx_df.groupby(src)[amt].agg(
-        total_send_amt="sum",
-        max_send_amt="max",
-        min_send_amt="min",
-        avg_send_amt="mean",
-    )
-    src_agg_cnt = tx_df.groupby(src)[dst].agg(
-        out_deg="nunique",
-        out_tx_count="count",
-    )
-    send_side = pd.concat([src_agg_amt, src_agg_cnt], axis=1)
+    # ---------- 1. 針對「付款方」聚合金額與次數 ----------
+    send_group = tx_df.groupby(src_col)[amt_col]
 
-    # --- 2. 針對「收款方」聚合金額與次數 ---
-    dst_agg_amt = tx_df.groupby(dst)[amt].agg(
-        total_recv_amt="sum",
-        max_recv_amt="max",
-        min_recv_amt="min",
-        avg_recv_amt="mean",
-    )
-    dst_agg_cnt = tx_df.groupby(dst)[src].agg(
-        in_deg="nunique",
-        in_tx_count="count",
-    )
-    recv_side = pd.concat([dst_agg_amt, dst_agg_cnt], axis=1)
+    send_amt_sum = send_group.sum().rename("out_amt_sum")
+    send_amt_max = send_group.max().rename("out_amt_max")
+    send_amt_min = send_group.min().rename("out_amt_min")
+    send_amt_mean = send_group.mean().rename("out_amt_mean")
 
-    # --- 3. 合併成帳戶層級表格 ---
-    all_acct_index = pd.Index(send_side.index).union(recv_side.index)
-    feat_df = (
-        pd.DataFrame(index=all_acct_index)
-        .join(send_side, how="left")
-        .join(recv_side, how="left")
-        .fillna(0.0)
-        .reset_index()
-        .rename(columns={"index": "acct"})
+    # 連結相關：不同收款對手數量、交易筆數
+    send_partner_count = (
+        tx_df.groupby(src_col)[dst_col]
+        .nunique()
+        .rename("out_partner_cnt")
+    )
+    send_tx_count = (
+        tx_df.groupby(src_col)[dst_col]
+        .count()
+        .rename("out_tx_cnt")  
     )
 
-    # --- 4. is_esun 標記（若有帳戶型態欄位） ---
+    send_features = pd.concat(
+        [
+            send_amt_sum,
+            send_amt_max,
+            send_amt_min,
+            send_amt_mean,
+            send_partner_count,
+            send_tx_count,
+        ],
+        axis=1,
+    )
+
+    # ---------- 2. 針對「收款方」聚合金額與次數 ----------
+    recv_group = tx_df.groupby(dst_col)[amt_col]
+
+    recv_amt_sum = recv_group.sum().rename("in_amt_sum") 
+    recv_amt_max = recv_group.max().rename("in_amt_max")
+    recv_amt_min = recv_group.min().rename("in_amt_min") 
+    recv_amt_mean = recv_group.mean().rename("in_amt_mean") 
+
+    recv_partner_count = (
+        tx_df.groupby(dst_col)[src_col]
+        .nunique()
+        .rename("in_partner_cnt")
+    )
+    recv_tx_count = (
+        tx_df.groupby(dst_col)[src_col]
+        .count()
+        .rename("in_tx_cnt") 
+    )
+
+    recv_features = pd.concat(
+        [
+            recv_amt_sum,
+            recv_amt_max,
+            recv_amt_min,
+            recv_amt_mean,
+            recv_partner_count,
+            recv_tx_count,
+        ],
+        axis=1,
+    )
+
+    # ---------- 3. 合併成帳戶層級表格 ----------
+    all_accounts_index = pd.Index(send_features.index).union(recv_features.index)
+    account_features = pd.DataFrame(index=all_accounts_index)
+    account_features = account_features.join(send_features, how="left")
+    account_features = account_features.join(recv_features, how="left")
+    account_features = account_features.fillna(0.0)
+    account_features = account_features.reset_index().rename(columns={"index": "acct"})
+
+    # ---------- 4. is_esun 標記（若有帳戶型態欄位） ----------
     from_type_col = col_map["from_type"]
     to_type_col = col_map["to_type"]
-    acct_esun_list = []
+    esun_rows = []
 
-    if from_type_col and from_type_col in tx_df.columns:
-        tmp = (
-            tx_df[[src, from_type_col]]
-            .dropna()
-            .drop_duplicates()
-            .rename(columns={src: "acct", from_type_col: "is_esun"})
-        )
-        acct_esun_list.append(tmp)
+    # 從付款方角度取 is_esun
+    if from_type_col is not None and from_type_col in tx_df.columns:
+        tmp_from = tx_df[[src_col, from_type_col]].copy()
+        tmp_from = tmp_from.dropna()
+        tmp_from = tmp_from.drop_duplicates()
+        tmp_from = tmp_from.rename(columns={src_col: "acct", from_type_col: "is_esun"})
+        esun_rows.append(tmp_from)
 
-    if to_type_col and to_type_col in tx_df.columns:
-        tmp = (
-            tx_df[[dst, to_type_col]]
-            .dropna()
-            .drop_duplicates()
-            .rename(columns={dst: "acct", to_type_col: "is_esun"})
-        )
-        acct_esun_list.append(tmp)
+    # 從收款方角度取 is_esun
+    if to_type_col is not None and to_type_col in tx_df.columns:
+        tmp_to = tx_df[[dst_col, to_type_col]].copy()
+        tmp_to = tmp_to.dropna()
+        tmp_to = tmp_to.drop_duplicates()
+        tmp_to = tmp_to.rename(columns={dst_col: "acct", to_type_col: "is_esun"})
+        esun_rows.append(tmp_to)
 
-    if len(acct_esun_list) > 0:
-        acct_esun_df = pd.concat(acct_esun_list, ignore_index=True).drop_duplicates()
-        acct_esun_df = acct_esun_df.groupby("acct")["is_esun"].max().reset_index()
-        feat_df = feat_df.merge(acct_esun_df, on="acct", how="left")
-        feat_df["is_esun"] = feat_df["is_esun"].fillna(1)
+    if len(esun_rows) > 0:
+        esun_df = pd.concat(esun_rows, ignore_index=True)
+        esun_df = esun_df.drop_duplicates()
+        esun_df = esun_df.groupby("acct")["is_esun"].max().reset_index()
+        account_features = account_features.merge(esun_df, on="acct", how="left")
+        account_features["is_esun"] = account_features["is_esun"].fillna(1)
     else:
-        # 若完全沒有帳戶型態欄位，預設視為玉山帳戶
-        feat_df["is_esun"] = 1
+        # 若完全沒有帳戶型態欄位，預設全部視為玉山帳戶
+        account_features["is_esun"] = 1
 
-    # --- 5. log1p 特徵 ---
+    # ---------- 5. log1p 特徵 ----------
     numeric_cols = [
-        "total_send_amt",
-        "total_recv_amt",
-        "max_send_amt",
-        "max_recv_amt",
-        "min_send_amt",
-        "min_recv_amt",
-        "avg_send_amt",
-        "avg_recv_amt",
-        "out_tx_count",
-        "in_tx_count",
+        "out_amt_sum",
+        "in_amt_sum",
+        "out_amt_max",
+        "in_amt_max",
+        "out_amt_min",
+        "in_amt_min",
+        "out_amt_mean",
+        "in_amt_mean",
+        "out_tx_cnt",
+        "in_tx_cnt",
     ]
+
     for col_name in numeric_cols:
-        if col_name in feat_df.columns:
-            feat_df[f"log1p_{col_name}"] = np.log1p(feat_df[col_name])
+        if col_name in account_features.columns:
+            new_col_name = f"log1p_{col_name}"
+            account_features[new_col_name] = np.log1p(account_features[col_name])
         else:
-            feat_df[f"log1p_{col_name}"] = 0.0
+            new_col_name = f"log1p_{col_name}"
+            account_features[new_col_name] = 0.0
 
-    # 欄位順序：acct / is_esun 在最前面
-    ordered_columns = (
-        ["acct", "is_esun"]
-        + [
-            "total_send_amt",
-            "total_recv_amt",
-            "max_send_amt",
-            "min_send_amt",
-            "avg_send_amt",
-            "max_recv_amt",
-            "min_recv_amt",
-            "avg_recv_amt",
-            "out_deg",
-            "in_deg",
-            "out_tx_count",
-            "in_tx_count",
-        ]
-        + [f"log1p_{c}" for c in numeric_cols]
-    )
+    base_cols = [
+        "acct",
+        "is_esun",
+        "out_amt_sum",
+        "in_amt_sum",
+        "out_amt_max",
+        "out_amt_min",
+        "out_amt_mean",
+        "in_amt_max",
+        "in_amt_min",
+        "in_amt_mean",
+        "out_partner_cnt",
+        "in_partner_cnt",
+        "out_tx_cnt",
+        "in_tx_cnt",
+    ]
 
-    feat_df = feat_df[ordered_columns].fillna(0.0)
-    print("[Preprocess] Built account-level features, shape =", feat_df.shape)
-    return feat_df
+    log_cols = [f"log1p_{c}" for c in numeric_cols]
+
+    ordered_columns = base_cols + log_cols
+
+    account_features = account_features[ordered_columns].fillna(0.0)
+
+    print("[Preprocess] Built account-level features, shape =", account_features.shape)
+    return account_features
 
 
 # ------------------------------------------------------
@@ -288,17 +324,23 @@ def normalize_features_by_train(
     """
     scaler = StandardScaler()
 
-    # 只用訓練節點 fit scaler
-    X_all[train_index] = scaler.fit_transform(X_all[train_index])
+    # 只用訓練節點去 fit scaler
+    train_features = X_all[train_index]
+    train_features_scaled = scaler.fit_transform(train_features)
+    X_all[train_index] = train_features_scaled
 
+    # 取出 mean / scale，之後手動套到其他節點
     mean_vec = scaler.mean_
     scale_vec = getattr(scaler, "scale_", np.sqrt(scaler.var_ + 1e-9))
 
-    # 其餘節點使用相同 mean/scale 做標準化
+    # 建一個 boolean mask，把「不是訓練節點」的位置標出來
     mask_rest = np.ones(len(X_all), dtype=bool)
     mask_rest[train_index] = False
 
-    X_all[mask_rest] = (X_all[mask_rest] - mean_vec) / (scale_vec + 1e-12)
-    X_all[mask_rest] = np.clip(X_all[mask_rest], -5, 5)
+    # 對非訓練節點套用同一組 mean / scale，並做 clip
+    X_rest = X_all[mask_rest]
+    X_rest = (X_rest - mean_vec) / (scale_vec + 1e-12)
+    X_rest = np.clip(X_rest, -5, 5)
+    X_all[mask_rest] = X_rest
 
     return X_all, scaler
