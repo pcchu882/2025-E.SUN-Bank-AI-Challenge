@@ -1,35 +1,40 @@
 # 2025 玉山人工智慧公開挑戰賽 – 警示帳戶預測
 
-> 隊伍編號：TEAM_9686   
+> 隊伍編號：TEAM_9686  
 > 組別：學生組  
-> 組長(組員)：褚柏均  
+> 組長（組員）：褚柏均  
 > 私有榜成績：F1 = 0.3849494  
 
-本專案實作 2025 玉山人工智慧公開挑戰賽之「警示帳戶預測」任務，目標是根據帳戶交易紀錄，預測哪些帳戶會被標記為警示帳戶。  
+本專案實作 2025 玉山人工智慧公開挑戰賽之「警示帳戶預測」任務，目標是根據帳戶交易紀錄，預測哪些帳戶會被標記為警示帳戶（label = 1）。
+
 整體方法為：
 
-- 先將**交易紀錄聚合成帳戶層級特徵**（帳戶的流入/流出金額、筆數、對手數量、金額分布等）
-- 再利用交易圖建構**帳戶關聯圖**（節點為帳戶、邊為交易關係）
-- 以改良版 **GraphSAGE (SimpleSAGEv2)** 進行圖上的節點分類
-- 最後以 **閾值 + Top-K F1 校準策略**，在驗證集上自動選擇較好的預測邏輯，投影到測試集生成最終 `result.csv` 提交檔
+- 先將**交易紀錄聚合成帳戶層級特徵**（帳戶的流入 / 流出金額、筆數、對手數量、金額分布等）
+- 再利用交易紀錄建構**帳戶關聯圖**（節點為帳戶、邊為交易關係）
+- 以改良版 **GraphSAGE（SimpleSAGEv2）** 在圖上做節點二元分類
+- 最後以 **「閾值 + Top-K F1 校準策略」**，在驗證集上選出較好的預測邏輯，投影到測試集產生最終 `result.csv`
 
 ---
-**結構說明**  
-.  
-├── preliminary_data/  
-│   ├── acct_alert.csv    
-│   ├── acct_predict.csv  
-│   └── acct_transaction.csv        
-├── main.py   
-├── result.csv   
-├── requirements.txt  
-└── README.md     
 
-preliminary_data/         # 存放Dataset位置  (由於檔案太大就沒有放進來  
-result.csv                # 輸出預測結果  
-main.py                   # 執行完整流程：前處理 → 訓練 → 產生 result.csv  
-requirements.txt          # 套件需求  
-README.md                 # 說明專案概述、環境、使用方式與實驗結果  
+## 1. 專案結構
+
+```text
+.
+├── Preprocess/
+│   ├── data_preprocess.py    # 資料讀取、欄位對應、帳戶特徵工程、標準化
+│   └── README.md             # Preprocess 模組說明
+├── Model/
+│   ├── gnn_model.py          # 建圖、GNN 模型(SimpleSAGEv2)、訓練與 Top-K 邏輯
+│   └── README.md             # Model 模組說明
+├── preliminary_data/         # 存放比賽官方提供之 CSV（未放入 GitHub）
+│   ├── acct_transaction.csv
+│   ├── acct_alert.csv
+│   └── acct_predict.csv
+├── main.py                   # 主程式：串接前處理 → 建圖 → 訓練 → 推論 → 輸出 result.csv
+├── requirements.txt          # 套件需求
+├── result.csv                # 範例輸出（acct, label）
+└── README.md                 # 本說明文件
+ ```
 
 
 
