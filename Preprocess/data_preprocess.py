@@ -6,229 +6,299 @@ This module handles:
 2. Resolving column names with different naming conventions
 3. Building account-level features from transaction records
 
-Author: 褚柏均
 """
 
 from typing import List, Optional, Dict, Tuple
 import os
+
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
 
 # ------------------------------------------------------
-#  Utility: find column name under different naming rules
+#  Utility: pick a column name from candidates
 # ------------------------------------------------------
-def find_col(df: pd.DataFrame, cand: List[str]) -> Optional[str]:
+def pick_col_name(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     """
-    Find a suitable column name in `df` given a list of candidate names.
+    Pick a suitable column name in `df` from a list of candidate names.
 
-    The function tries, in this order:
+    Matching order:
         1. Exact match (case-sensitive)
         2. Exact match (case-insensitive)
-        3. Fuzzy match (candidate string is contained in a column name)
-
-    Args:
-        df (pd.DataFrame): Input DataFrame whose columns will be searched.
-        cand (List[str]): Candidate column names or patterns.
-
-    Returns:
-        Optional[str]: The selected column name in `df` if found, otherwise None.
+        3. Substring match (candidate appears in column name, case-insensitive)
     """
-    cols = list(df.columns)
-    lower = {c.lower(): c for c in cols}
+    col_list = list(df.columns)
+    lower_map = {c.lower(): c for c in col_list}
 
-    # exact / case-insensitive
-    for name in cand:
-        if name in cols:
-            return name
-        ln = name.lower()
-        if ln in lower:
-            return lower[ln]
+    # 1 & 2: exact match
+    for cand in candidates:
+        if cand in col_list:
+            return cand
+        cand_lower = cand.lower()
+        if cand_lower in lower_map:
+            return lower_map[cand_lower]
 
-    # prefix / contains
-    for name in cand:
-        ln = name.lower()
-        for c in cols:
-            if ln in c.lower():
-                return c
+    # 3: substring match
+    for cand in candidates:
+        cand_lower = cand.lower()
+        for col in col_list:
+            if cand_lower in col.lower():
+                return col
+
     return None
 
 
 # ------------------------------------------------------
 # Load CSVs
 # ------------------------------------------------------
-def load_csvs(dir_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def read_competition_csvs(data_dir: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Load the three main CSV files required by the competition.
+    Read the three official CSV files from the given directory.
 
-    Expected filenames (under `dir_path`):
+    Files:
         - acct_transaction.csv
         - acct_alert.csv
         - acct_predict.csv
-
-    Args:
-        dir_path (str): Directory that contains the three CSV files.
-
-    Returns:
-        (tx, alert, test) Three dataframes.
     """
-    tx = pd.read_csv(os.path.join(dir_path, 'acct_transaction.csv'))
-    alert = pd.read_csv(os.path.join(dir_path, 'acct_alert.csv'))
-    test = pd.read_csv(os.path.join(dir_path, 'acct_predict.csv'))
-    print("(Finish) Load Dataset.")
-    return tx, alert, test
+    tx_path = os.path.join(data_dir, "acct_transaction.csv")
+    alert_path = os.path.join(data_dir, "acct_alert.csv")
+    predict_path = os.path.join(data_dir, "acct_predict.csv")
+
+    tx_df = pd.read_csv(tx_path)
+    alert_df = pd.read_csv(alert_path)
+    predict_df = pd.read_csv(predict_path)
+
+    print("[Preprocess] Loaded transaction / alert / predict CSVs from:", data_dir)
+    return tx_df, alert_df, predict_df
 
 
 # ------------------------------------------------------
 # Resolve column names under different naming conventions
 # ------------------------------------------------------
-def resolve_columns(tx: pd.DataFrame, alert: pd.DataFrame, test: pd.DataFrame) -> Dict[str, str]:
+def infer_column_mapping(
+    tx_df: pd.DataFrame,
+    alert_df: pd.DataFrame,
+    predict_df: pd.DataFrame,
+) -> Dict[str, str]:
     """
-    Resolve and normalize column names across different CSV files.
+    Infer and normalize column names across different CSV files.
 
-    This handles different naming conventions:
-    - from_acct / payer_acct_id / src / source_account
-    - to_acct / receiver_acct_id / dst / target_account
-    - txn_amt / amount / tx_amount / trade_amount
-    - acct / acct_id / account_id / account
+    This handles different naming conventions, e.g.:
+        - from_acct / payer_acct_id / src / source_account
+        - to_acct   / receiver_acct_id / dst / target_account
+        - txn_amt   / amount / tx_amount / trade_amount
+        - acct      / acct_id / account_id / account
 
     Returns:
-        dict mapping logical column roles to actual dataframe columns.
+        A dict mapping:
+            - "src", "dst", "amt"
+            - "from_type", "to_type"
+            - "alert_acct", "alert_date"
+            - "predict_acct"
     """
-    src = find_col(tx, ["from_acct", "payer_acct_id", "src", "src_acct", "from", "acct_from", "source_account"])
-    dst = find_col(tx, ["to_acct", "receiver_acct_id", "dst", "dst_acct", "to", "acct_to", "target_account"])
-    amt = find_col(tx, ["txn_amt", "amount", "tx_amount", "amt", "money", "trade_amount"])
+    src_col = pick_col_name(
+        tx_df,
+        ["from_acct", "payer_acct_id", "src", "src_acct", "from", "acct_from", "source_account"],
+    )
+    dst_col = pick_col_name(
+        tx_df,
+        ["to_acct", "receiver_acct_id", "dst", "dst_acct", "to", "acct_to", "target_account"],
+    )
+    amt_col = pick_col_name(
+        tx_df,
+        ["txn_amt", "amount", "tx_amount", "amt", "money", "trade_amount"],
+    )
 
-    from_type = find_col(tx, ["from_acct_type", "src_acct_type", "is_esun_from", "from_type"])
-    to_type = find_col(tx, ["to_acct_type", "dst_acct_type", "is_esun_to", "to_type"])
+    from_type_col = pick_col_name(
+        tx_df,
+        ["from_acct_type", "src_acct_type", "is_esun_from", "from_type"],
+    )
+    to_type_col = pick_col_name(
+        tx_df,
+        ["to_acct_type", "dst_acct_type", "is_esun_to", "to_type"],
+    )
 
-    if src is None or dst is None:
-        raise ValueError(f"Cannot find src/dst columns in acct_transaction.csv")
+    if src_col is None or dst_col is None:
+        raise ValueError("Cannot find src/dst columns in acct_transaction.csv")
 
-    if amt is None:
-        tx["_AMT_"] = 1.0
-        amt = "_AMT_"
+    # 若沒有金額欄位，就用常數 1.0，代表「交易次數」
+    if amt_col is None:
+        tx_df["_AMT_"] = 1.0
+        amt_col = "_AMT_"
 
-    a_acct = find_col(alert, ["acct", "acct_id", "account_id", "account"])
-    a_date = find_col(alert, ["event_date", "alert_date", "date", "datetime", "month"])
-    p_acct = find_col(test, ["acct", "acct_id", "account_id", "account"])
+    alert_acct_col = pick_col_name(alert_df, ["acct", "acct_id", "account_id", "account"])
+    alert_date_col = pick_col_name(alert_df, ["event_date", "alert_date", "date", "datetime", "month"])
+    predict_acct_col = pick_col_name(predict_df, ["acct", "acct_id", "account_id", "account"])
 
-    if a_acct is None or p_acct is None:
+    if alert_acct_col is None or predict_acct_col is None:
         raise ValueError("Cannot find acct columns in alert/predict files")
 
-    return {
-        "src": src, "dst": dst, "amt": amt,
-        "from_type": from_type, "to_type": to_type,
-        "alert_acct": a_acct, "alert_date": a_date,
-        "predict_acct": p_acct
+    col_map = {
+        "src": src_col,
+        "dst": dst_col,
+        "amt": amt_col,
+        "from_type": from_type_col,
+        "to_type": to_type_col,
+        "alert_acct": alert_acct_col,
+        "alert_date": alert_date_col,
+        "predict_acct": predict_acct_col,
     }
+    print("[Preprocess] Column mapping:", col_map)
+    return col_map
 
 
 # ------------------------------------------------------
 # Build basic account-level features
 # ------------------------------------------------------
-def build_account_features(tx: pd.DataFrame, col: Dict[str, str]) -> pd.DataFrame:
+def make_account_features_basic(tx_df: pd.DataFrame, col_map: Dict[str, str]) -> pd.DataFrame:
     """
     Build basic account-level features from transaction logs.
 
-    This matches the version used in the final submission.
+    Feature list roughly matches the version used in the final submission,
+    but the implementation is kept simple for readability.
     """
-    src, dst, amt = col["src"], col["dst"], col["amt"]
+    src = col_map["src"]
+    dst = col_map["dst"]
+    amt = col_map["amt"]
 
-    # total sent / recv
-    send = tx.groupby(src)[amt].sum().rename('total_send_amt')
-    recv = tx.groupby(dst)[amt].sum().rename('total_recv_amt')
+    # --- 1. 針對「付款方」聚合金額與次數 ---
+    src_agg_amt = tx_df.groupby(src)[amt].agg(
+        total_send_amt="sum",
+        max_send_amt="max",
+        min_send_amt="min",
+        avg_send_amt="mean",
+    )
+    src_agg_cnt = tx_df.groupby(src)[dst].agg(
+        out_deg="nunique",
+        out_tx_count="count",
+    )
+    send_side = pd.concat([src_agg_amt, src_agg_cnt], axis=1)
 
-    max_send = tx.groupby(src)[amt].max().rename('max_send_amt')
-    min_send = tx.groupby(src)[amt].min().rename('min_send_amt')
-    avg_send = tx.groupby(src)[amt].mean().rename('avg_send_amt')
+    # --- 2. 針對「收款方」聚合金額與次數 ---
+    dst_agg_amt = tx_df.groupby(dst)[amt].agg(
+        total_recv_amt="sum",
+        max_recv_amt="max",
+        min_recv_amt="min",
+        avg_recv_amt="mean",
+    )
+    dst_agg_cnt = tx_df.groupby(dst)[src].agg(
+        in_deg="nunique",
+        in_tx_count="count",
+    )
+    recv_side = pd.concat([dst_agg_amt, dst_agg_cnt], axis=1)
 
-    max_recv = tx.groupby(dst)[amt].max().rename('max_recv_amt')
-    min_recv = tx.groupby(dst)[amt].min().rename('min_recv_amt')
-    avg_recv = tx.groupby(dst)[amt].mean().rename('avg_recv_amt')
+    # --- 3. 合併成帳戶層級表格 ---
+    all_acct_index = pd.Index(send_side.index).union(recv_side.index)
+    feat_df = (
+        pd.DataFrame(index=all_acct_index)
+        .join(send_side, how="left")
+        .join(recv_side, how="left")
+        .fillna(0.0)
+        .reset_index()
+        .rename(columns={"index": "acct"})
+    )
 
-    out_deg = tx.groupby(src)[dst].nunique().rename('out_deg')
-    in_deg = tx.groupby(dst)[src].nunique().rename('in_deg')
+    # --- 4. is_esun 標記（若有帳戶型態欄位） ---
+    from_type_col = col_map["from_type"]
+    to_type_col = col_map["to_type"]
+    acct_esun_list = []
 
-    tx_cnt_out = tx.groupby(src)[dst].count().rename('out_tx_count')
-    tx_cnt_in = tx.groupby(dst)[src].count().rename('in_tx_count')
+    if from_type_col and from_type_col in tx_df.columns:
+        tmp = (
+            tx_df[[src, from_type_col]]
+            .dropna()
+            .drop_duplicates()
+            .rename(columns={src: "acct", from_type_col: "is_esun"})
+        )
+        acct_esun_list.append(tmp)
 
-    df_out = pd.concat([max_send, min_send, avg_send, send, out_deg, tx_cnt_out], axis=1)
-    df_in = pd.concat([max_recv, min_recv, avg_recv, recv, in_deg, tx_cnt_in], axis=1)
+    if to_type_col and to_type_col in tx_df.columns:
+        tmp = (
+            tx_df[[dst, to_type_col]]
+            .dropna()
+            .drop_duplicates()
+            .rename(columns={dst: "acct", to_type_col: "is_esun"})
+        )
+        acct_esun_list.append(tmp)
 
-    idx = pd.Index(df_out.index).union(df_in.index)
-    feat = pd.DataFrame(index=idx).join(df_out, how="left").join(df_in, how="left").fillna(0.0)
-    feat = feat.reset_index().rename(columns={"index": "acct"})
-
-    # is_esun
-    from_type, to_type = col["from_type"], col["to_type"]
-    if from_type and from_type in tx.columns:
-        df_from = tx[[src, from_type]].dropna().drop_duplicates().rename(columns={src: "acct", from_type: "is_esun"})
+    if len(acct_esun_list) > 0:
+        acct_esun_df = pd.concat(acct_esun_list, ignore_index=True).drop_duplicates()
+        acct_esun_df = acct_esun_df.groupby("acct")["is_esun"].max().reset_index()
+        feat_df = feat_df.merge(acct_esun_df, on="acct", how="left")
+        feat_df["is_esun"] = feat_df["is_esun"].fillna(1)
     else:
-        df_from = pd.DataFrame(columns=["acct", "is_esun"])
+        # 若完全沒有帳戶型態欄位，預設視為玉山帳戶
+        feat_df["is_esun"] = 1
 
-    if to_type and to_type in tx.columns:
-        df_to = tx[[dst, to_type]].dropna().drop_duplicates().rename(columns={dst: "acct", to_type: "is_esun"})
-    else:
-        df_to = pd.DataFrame(columns=["acct", "is_esun"])
+    # --- 5. log1p 特徵 ---
+    numeric_cols = [
+        "total_send_amt",
+        "total_recv_amt",
+        "max_send_amt",
+        "max_recv_amt",
+        "min_send_amt",
+        "min_recv_amt",
+        "avg_send_amt",
+        "avg_recv_amt",
+        "out_tx_count",
+        "in_tx_count",
+    ]
+    for col_name in numeric_cols:
+        if col_name in feat_df.columns:
+            feat_df[f"log1p_{col_name}"] = np.log1p(feat_df[col_name])
+        else:
+            feat_df[f"log1p_{col_name}"] = 0.0
 
-    df_acc = pd.concat([df_from, df_to], ignore_index=True).drop_duplicates()
+    # 欄位順序：acct / is_esun 在最前面
+    ordered_columns = (
+        ["acct", "is_esun"]
+        + [
+            "total_send_amt",
+            "total_recv_amt",
+            "max_send_amt",
+            "min_send_amt",
+            "avg_send_amt",
+            "max_recv_amt",
+            "min_recv_amt",
+            "avg_recv_amt",
+            "out_deg",
+            "in_deg",
+            "out_tx_count",
+            "in_tx_count",
+        ]
+        + [f"log1p_{c}" for c in numeric_cols]
+    )
 
-    if not df_acc.empty:
-        df_acc = df_acc.groupby("acct")["is_esun"].max().reset_index()
-        feat = feat.merge(df_acc, on="acct", how="left")
-        feat["is_esun"] = feat["is_esun"].fillna(1)
-    else:
-        feat["is_esun"] = 1
-
-    # add log transforms
-    for c in [
-        "total_send_amt","total_recv_amt","max_send_amt","max_recv_amt",
-        "min_send_amt","min_recv_amt","avg_send_amt","avg_recv_amt",
-        "out_tx_count","in_tx_count"
-    ]:
-        feat[f"log1p_{c}"] = np.log1p(feat[c])
-
-    keep = [
-        "acct","is_esun",
-        "total_send_amt","total_recv_amt",
-        "max_send_amt","min_send_amt","avg_send_amt",
-        "max_recv_amt","min_recv_amt","avg_recv_amt",
-        "out_deg","in_deg","out_tx_count","in_tx_count"
-    ] + [f"log1p_{c}" for c in [
-        "total_send_amt","total_recv_amt","max_send_amt","max_recv_amt",
-        "min_send_amt","min_recv_amt","avg_send_amt","avg_recv_amt",
-        "out_tx_count","in_tx_count"
-    ]]
-
-    feat = feat[keep].fillna(0.0)
-    return feat
+    feat_df = feat_df[ordered_columns].fillna(0.0)
+    print("[Preprocess] Built account-level features, shape =", feat_df.shape)
+    return feat_df
 
 
 # ------------------------------------------------------
 # Standardize features
 # ------------------------------------------------------
-def standardize_features(
+def normalize_features_by_train(
     X_all: np.ndarray,
-    train_idx: np.ndarray
+    train_index: np.ndarray,
 ) -> Tuple[np.ndarray, StandardScaler]:
     """
     Standardize node features using only the training nodes, then apply the
-    same transformation to all nodes.
-
-    Returns:
-        X_all_std, scaler.
+    same transformation to all nodes. Non-training nodes are clipped to [-5, 5].
     """
     scaler = StandardScaler()
-    X_all_train_scaled = scaler.fit_transform(X_all[train_idx])
-    X_all[train_idx] = X_all_train_scaled
 
-    mean = scaler.mean_
-    scale = getattr(scaler, "scale_", np.sqrt(scaler.var_ + 1e-9))
+    # 只用訓練節點 fit scaler
+    X_all[train_index] = scaler.fit_transform(X_all[train_index])
 
+    mean_vec = scaler.mean_
+    scale_vec = getattr(scaler, "scale_", np.sqrt(scaler.var_ + 1e-9))
+
+    # 其餘節點使用相同 mean/scale 做標準化
     mask_rest = np.ones(len(X_all), dtype=bool)
-    mask_rest[train_idx] = False
+    mask_rest[train_index] = False
 
-    X_all[mask_rest] = np.clip((X_all[mask_rest] - mean) / (scale + 1e-12), -5, 5)
+    X_all[mask_rest] = (X_all[mask_rest] - mean_vec) / (scale_vec + 1e-12)
+    X_all[mask_rest] = np.clip(X_all[mask_rest], -5, 5)
+
     return X_all, scaler
