@@ -73,7 +73,6 @@ def read_competition_csvs(data_dir: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd
     alert_df = pd.read_csv(alert_path)
     predict_df = pd.read_csv(predict_path)
 
-    print("[Preprocess] Loaded transaction / alert / predict CSVs from:", data_dir)
     return tx_df, alert_df, predict_df
 
 
@@ -141,7 +140,6 @@ def infer_column_mapping(
         "predict_acct": predict_acct_col,
     }
 
-    print("[Preprocess] Column mapping:", col_map)
     return col_map
 
 
@@ -307,7 +305,6 @@ def make_account_features_basic(tx_df: pd.DataFrame, col_map: Dict[str, str]) ->
 
     account_features = account_features[ordered_columns].fillna(0.0)
 
-    print("[Preprocess] Built account-level features, shape =", account_features.shape)
     return account_features
 
 
