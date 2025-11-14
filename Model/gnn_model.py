@@ -7,7 +7,6 @@ This module handles:
 3. Training the GNN with class imbalance handling and simple early stopping
 4. Top-K F1 search and K scaling from validation to test
 
-Author: 褚柏均
 """
 
 from typing import Dict, Tuple
