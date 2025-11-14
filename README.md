@@ -25,8 +25,7 @@
 ├── requirements.txt  
 └── README.md     
 
-preliminary_data/         # 存放Dataset位置  
-* 由於檔案太大就沒有放進來  
+preliminary_data/         # 存放Dataset位置  (由於檔案太大就沒有放進來  
 result.csv                # 輸出預測結果  
 main.py                   # 執行完整流程：前處理 → 訓練 → 產生 result.csv  
 requirements.txt          # 套件需求  
