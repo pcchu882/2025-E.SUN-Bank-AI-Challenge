@@ -1,184 +1,161 @@
 # 2025 玉山人工智慧公開挑戰賽 – 警示帳戶預測
 
-> 隊伍編號：TEAM_9686  
-> 組別：學生組  
-> 組長（組員）：褚柏均  
-> 私有榜成績：F1 = 0.3849494  
+> **隊伍編號：TEAM_9686**
+> **組別：學生組**
+> **組長：褚柏均**
+> **Private Leaderboard F1：0.3849494**
 
-本專案實作 2025 玉山人工智慧公開挑戰賽之「警示帳戶預測」任務，目標是根據帳戶交易紀錄，預測哪些帳戶會被標記為警示帳戶（label = 1）。
+本專案為 2025 玉山人工智慧公開挑戰賽「警示帳戶預測」初賽資格審查所需之完整程式碼，包含：
 
-整體方法為：
+* **資料前處理**（欄位解析、特徵工程、標準化）
+* **帳戶關聯圖建構（Account Graph）**
+* **圖神經網路（GNN, SimpleSAGEv2）訓練與推論**
+* **閾值與 Top-K F1 校準策略**
+* 一鍵執行產生 `result.csv`
 
-- 先將**交易紀錄聚合成帳戶層級特徵**（帳戶的流入 / 流出金額、筆數、對手數量、金額分布等）
-- 再利用交易紀錄建構**帳戶關聯圖**（節點為帳戶、邊為交易關係）
-- 以改良版 **GraphSAGE（SimpleSAGEv2）** 在圖上做節點二元分類
-- 最後以 **「閾值 + Top-K F1 校準策略」**，在驗證集上選出較好的預測邏輯，投影到測試集產生最終 `result.csv`
+所有流程由 `main.py` 串接，評審者可直接執行並重現結果。
 
 ---
 
-## 1. 專案結構
+# 1. 專案結構
 
-```text
+```
 .
 ├── Preprocess/
-│   ├── data_preprocess.py    # 資料讀取、欄位對應、帳戶特徵工程、標準化
-│   └── README.md             # Preprocess 模組說明
+│   ├── data_preprocess.py     # 資料解析、特徵工程、標準化
+│   └── README.md              # Preprocess 模組說明
+│
 ├── Model/
-│   ├── gnn_model.py          # 建圖、GNN 模型(SimpleSAGEv2)、訓練與 Top-K 邏輯
-│   └── README.md             # Model 模組說明
-├── preliminary_data/         # 存放比賽官方提供之 CSV（未放入 GitHub）
+│   ├── gnn_model.py           # 建圖、GNN 模型、訓練、Top-K
+│   └── README.md              # Model 模組說明
+│
+├── preliminary_data/          # 官方提供資料 (未上傳)
 │   ├── acct_transaction.csv
 │   ├── acct_alert.csv
 │   └── acct_predict.csv
-├── main.py                   # 主程式：串接前處理 → 建圖 → 訓練 → 推論 → 輸出 result.csv
-├── requirements.txt          # 套件需求
-├── result.csv                # 範例輸出（acct, label）
-└── README.md                 # 本說明文件
- ```
+│
+├── main.py                    # 主流程：前處理 → 建圖 → 訓練 → 推論
+├── requirements.txt           # 套件需求
+├── result.csv                 # 執行結果範例
+└── README.md                  # 主說明文件（本檔）
+```
 
+---
 
+# 2. 執行環境
 
-## 1. 環境需求
+* Python **3.10.19**
 
-- Python：3.10.19
+安裝必要套件：
 
-安裝所需套件
 ```bash
 pip install -r requirements.txt
 ```
 
-設定資料集 `preliminary_data/` ，確認裡面資料存在
+請將官方資料放入：
 
+```
+preliminary_data/
+```
 
-## 2. 執行
+並確認三個 CSV 皆存在。
+
+---
+
+# 3. 一鍵執行
 
 ```bash
 python main.py
 ```
-1. 讀取 ```acct_transaction.csv / acct_alert.csv / acct_predict.csv```
-2. 產生帳戶層級特徵
-3. 建立交易圖與節點索引
-4. 訓練 GraphSAGEv2 模型，並在訓練資料中切出一部份做驗證
-5. 在驗證集上搜尋最佳 Top-K 以最大化 F1，再外推至測試集
-6. 在專案根目錄或指定位置輸出 ```result.csv```（欄位為 ```acct, label```）
 
+流程包含：
 
-
-
-
-
-# 方法概述
-**帳戶特徵工程:**
-
-對每一個帳戶，我們從交易紀錄中抽取下列特徵（主要實作在 build_account_features / build_account_features_v2）：  
-金額相關：
-- 總流出金額 ```total_send_amt```  
-- 總流入金額 ```total_recv_amt```  
-- 流出 / 流入金額的最大值、最小值、平均值
-
-結構 / 連結相關：
-- 不同收款對手數量 ```out_deg```  
-- 不同付款對手數量 ```in_deg```  
-- 流出交易筆數 ```out_tx_count```  
-- 流入交易筆數 ```in_tx_count```
-  
-衍生指標：
-- 淨流量 ```net_flow_amt = total_send_amt - total_recv_amt```  
-- 淨流量比例 ```flow_ratio = net_flow_amt / (total_send_amt + total_recv_amt + eps)```  
-- 每個對手的平均金額、每個對手的平均交易次數  
-- 整體平均金額 ```mean_amt_overall```
-
-高金額行為：
-- 金額高於 90 / 99 百分位時的筆數與總額（分別對應流出/流入）  
-時間相關（若資料有日期欄位）：  
-- 不同時間窗（例如 7 / 30 / 90 天）的交易筆數與金額累積  
-- 最近一次流出 / 流入距今天的天數（recency）
-
-其它：
-- 帳戶是否為玉山帳戶 ```is_esun```  
-- 針對金額 / 筆數等欄位進行 ```log1p``` 變換，以穩定數值分布  
-- 對連續特徵進行分位數裁切（如 ```clip_quantile=0.999```）以降低極端值影響  
-  
-最後，我們會對訓練節點的特徵做標準化（StandardScaler），並用同一組 scaler 轉換其餘節點，數值裁切到合理範圍（例如 [-5, 5]）。  
+1. 讀取 `acct_transaction.csv / acct_alert.csv / acct_predict.csv`
+2. 特徵工程：將交易紀錄聚合成帳戶特徵
+3. 建立帳戶關聯圖（Sparse Graph）
+4. 訓練 GraphSAGEv2
+5. 在驗證集比較：threshold vs Top-K
+6. 在測試集套用最佳校準策略
+7. 輸出 `result.csv`（格式：acct, label）
 
 ---
-**圖結構建模**  
 
-節點：帳戶（以 ```acct``` 為 key 建立全體帳戶的 index）  
-邊：帳戶間發生過至少一次交易，即建立一個無向邊  
-權重 / 正規化：  
-- 對每一個節點，將其外出邊權重正規化為 ```1 / out_degree```  
-- 最終得到 row-normalized 的稀疏 adjacency matrix A（PyTorch sparse tensor）  
+# 4. 方法概述
 
----
-**模型架構 – SimpleSAGEv2**
+## 4.1 帳戶特徵工程
 
-核心模型為 SimpleSAGEv2，是一個多層的 GraphSAGE 變形，主要設計如下：
-多層 _SAGEBlock 堆疊（預設 depth=3），每層包含：  
-- 自身線性轉換 ```lin_self```  
-- 鄰居訊息聚合 ```lin_neigh``` + ```A @ x```   
-- LayerNorm + GELU + Dropout  
+來自交易資料（amount / degree / counts）的帳戶層級特徵：
 
-殘差連接：
-- 若前後維度相同，加入殘差 ```h = h + h_new```，有助於穩定深層訓練
+* 流出金額：sum / max / min / mean
+* 流入金額：sum / max / min / mean
+* 流入、流出對手數量（in/out degree）
+* 流入、流出交易筆數
+* 是否為玉山帳戶（若無欄位則預設為 1）
+* 所有金額/筆數加入 `log1p()` 特徵（如 `log1p_out_amt_sum`）
 
-Jumping Knowledge：
-- ```jk="cat"``` 時，會將各層輸出串接後再送入最終線性層，有助於融合不同層次的圖訊息
-
-DropEdge：
-- 訓練階段對 adjacency 以機率 ```dropedge_p``` 隨機丟邊，再依比例縮放，有助於正則化與避免 overfitting
-
-最終輸出：
-- 線性層將節點表示映射到 scalar logit，代表該帳戶為警示帳戶的傾向
+並以 **訓練節點資料 fit StandardScaler**，避免資料洩漏，再將所有節點標準化到合理範圍（含 clip [-5,5]）。
 
 ---
-**訓練策略**
 
-訓練流程主要在 ```train_gnn``` 中完成，重點如下：
+## 4.2 帳戶關聯圖（Account Graph）
 
-損失函數：
-- 使用 ```BCEWithLogitsLoss```，並針對正負樣本不平衡設定 ```pos_weight = N_neg / N_pos```
+* 每個**帳戶為一個節點**
+* 若兩帳戶曾有交易 → 形成**無向邊**
+* 進行 row-normalization，權重為：
 
-資料切分：
-- 僅使用「非預測清單」且「is_esun==1」的帳戶作為訓練資料
-- 透過 ```StratifiedKFold``` 將訓練節點切成 train / val（例如 5 折中取一折為驗證）
+  ```
+  1 / out_degree
+  ```
 
-超參數（實際使用設定）：
-- hidden 維度：160
-- depth：3
-- dropout：0.3
-- dropedge_p：0.1
-- learning rate：1e-3
-- weight decay：1e-4
-- epochs：500
-
-早停：
-- 以驗證集 F1 作為監控指標，若連續若干 epoch 未提升則 early stop
-
-評估：
-- 每幾個 epoch 計算一次驗證集 F1，並保存最佳權重
+並於訓練期間支援 **DropEdge** 正則化，降低 overfitting。
 
 ---
-**預測與 Top-K 校準**
 
-在得到所有節點的預測機率之後，我們針對驗證集進行兩種策略比較：
+## 4.3 模型：SimpleSAGEv2（最佳競賽模型）
 
-固定閾值法：
-- 使用預設閾值（例如 ```thr=0.5```）將機率轉為 0/1 標籤
-- 計算 F1 分數
+* 多層 GraphSAGE-style Layer
+* LayerNorm + GELU + Dropout
+* Residual 殘差連接
+* Jumping Knowledge (JK-cat)
+* DropEdge during training
+* 最終輸出節點 logit → sigmoid → 機率
 
-Top-K 搜索法：
-- 依機率遞減排序，從 K=1 ～ N 逐一測試
-- 對每個 K 計算相對應的 TP / FP / FN，進而算出 F1
-- 選出使得 F1 最佳的 ```K_val*```，同時記錄此時的 F1
+此模型在本競賽資料上表現最佳。
 
-接著，我們將驗證集最佳 K 投影到測試集大小：
-```text
-K_test = ceil( (K_val* / N_val) * N_test * alpha )
+---
+
+## 4.4 訓練策略
+
+* Loss：`BCEWithLogitsLoss`
+* pos_weight 自動平衡類別不均
+* 5-fold Stratified Split（取 1 fold 作為驗證）
+* 以驗證 F1 作 early stopping 依據
+* 儲存最佳權重
+
+---
+
+## 4.5 預測與 Top-K 校準
+
+驗證階段計算：
+
+### ① Threshold（thr=0.5）
+
+直接以 0.5 二值化，但通常陽性太少。
+
+### ② Top-K 搜尋
+
+逐一測 K＝1…N，找出：
+
+```
+K_val = argmax_F1(K)
 ```
 
-其中 ```alpha``` 為調整係數（預設 1.0，可用於保守或激進預測），最後在測試集上擇一策略輸出：
-- 若模式為 ```topk_mode="fallback"```：
-- 先用閾值法，如果預測的陽性數量過少（低於 ```min_pos_pred```），則改用 Top-K
-- 其它模式則可強制使用 Top-K 或閾值（程式中已支援）
+並外推到 test：
 
+```
+K_test = ceil((K_val / N_val) * N_test * alpha)
+```
+
+若 threshold 預測陽性過低 → fallback 改用 Top-K（本次提交使用）。
+
+---
