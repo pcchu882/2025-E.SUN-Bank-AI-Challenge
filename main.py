@@ -9,7 +9,6 @@ Pipeline:
 5. 閾值 + Top-K 校準
 6. 輸出 result.csv
 
-Author: 褚柏均
 """
 
 import random
